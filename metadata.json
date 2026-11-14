@@ -1,0 +1,6 @@
+{
+  "name": "CivicLead Engine",
+  "description": "Local-first, open-source B2B target crawler, three-mode workflow enrichment engine, and human-in-the-loop plain-text Gmail draft staging studio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
