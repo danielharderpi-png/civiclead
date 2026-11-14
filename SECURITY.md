@@ -27,7 +27,7 @@ If you discover a security vulnerability in CivicLead Engine, **please do not op
 Instead, report it privately so it can be investigated and patched before public disclosure:
 
 1. Use GitHub's **Private Vulnerability Reporting** ("Security" tab -> "Advisories" -> "Report a vulnerability") on `danielharderpi-png/civiclead`, **or**
-2. Contact the maintainer directly via email: **danielharder.pi@gmail.com** with `[SECURITY] CivicLead` in the subject line.
+2. Contact the maintainer directly via email: **danielharder.stuff@gmail.com** with `[SECURITY] CivicLead` in the subject line.
 
 Please include:
 - A description of the vulnerability and potential impact.
