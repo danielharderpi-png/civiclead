@@ -16,7 +16,7 @@ CivicLead Engine discovers local or B2B company domains, crawls public contact a
 
 Zero-Key Local Scraper → Live Domain Crawler → Offer Mechanics → AI Guardrail & Gmail Handoff ($0.00 API Cost)
 
-<!-- PASTE_GITHUB_VIDEO_ATTACHMENT_URL_HERE -->
+https://github.com/user-attachments/assets/050a4f82-ddf6-4cd3-9c03-7e1578671d9f
 
 ---
 
