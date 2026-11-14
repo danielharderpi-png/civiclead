@@ -12,6 +12,14 @@ CivicLead Engine discovers local or B2B company domains, crawls public contact a
 
 ---
 
+## Live Workflow Demo
+
+Zero-Key Local Scraper → Live Domain Crawler → Offer Mechanics → AI Guardrail & Gmail Handoff ($0.00 API Cost)
+
+<!-- PASTE_GITHUB_VIDEO_ATTACHMENT_URL_HERE -->
+
+---
+
 ## Core Philosophy
 
 - **Local-First SQLite Ledger**: All leads, product profiles, engine settings, and staged RFC 2822 draft logs persist locally in `./data/civiclead.db` using Node's built-in `node:sqlite`. Zero cloud lock-in, zero telemetry.
