@@ -6,6 +6,7 @@ import type {
   SearchApiProvider,
 } from '../src/shared/types.ts';
 import { normalizeDomain } from './crawler.ts';
+import { assertSafePublicUrl } from './security.ts';
 
 const BLOCKED_DOMAINS = new Set([
   'yelp.com',
@@ -403,6 +404,8 @@ async function queryCustomSearch(
           .replace(/\{query\}/g, encodeURIComponent(query))
           .replace(/\{q\}/g, encodeURIComponent(query))
       : cleanEndpoint;
+
+    await assertSafePublicUrl(targetUrl);
 
     const res = await fetch(targetUrl, {
       method: usesTemplate ? 'GET' : 'POST',

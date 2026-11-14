@@ -9,6 +9,7 @@ import type {
   ProductProfile,
   UserSettings,
 } from '../src/shared/types.ts';
+import { assertSafeAiBaseUrl } from './security.ts';
 
 const NON_TEXT_MODEL_RE =
   /(embedding|embed|whisper|tts|dall-e|moderation|audio|imagen|veo|lyria|rerank)/i;
@@ -54,11 +55,8 @@ export function normalizeOpenAiBaseUrl(rawUrl: string): string {
     .replace(/\/api\/(?:chat|generate)$/i, '/v1')
     .replace(/\/+$/, '');
 
-  // Validate URL syntax
-  const parsed = new URL(cleaned);
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('Base URL must use http:// or https://.');
-  }
+  // Validate URL syntax and block unsafe metadata/credentialed URLs
+  assertSafeAiBaseUrl(cleaned, true);
   return cleaned;
 }
 

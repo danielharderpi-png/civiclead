@@ -86,13 +86,18 @@ export function ProductProfileView({
 
   const handleImportProfileJson = async (file: File | undefined) => {
     if (!file) return;
-    const text = await file.text();
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    const merged = normalizeProductProfile(parsed);
-    setForm(merged);
-    setTradesInput(merged.targetTrades.join(', '));
-    await onSaveProfile(merged);
-    showTempNotice('Imported profile JSON');
+    setFormError(null);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const merged = normalizeProductProfile(parsed);
+      setForm(merged);
+      setTradesInput(merged.targetTrades.join(', '));
+      await onSaveProfile(merged);
+      showTempNotice('Imported profile JSON');
+    } catch {
+      setFormError('Invalid profile JSON file.');
+    }
   };
 
   return (

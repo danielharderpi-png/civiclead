@@ -739,17 +739,24 @@ export function ReviewQueueView({
                           : source.startsWith('/')
                             ? `https://${activeLead.domain}${source}`
                             : `https://${activeLead.domain}/`;
+                        const isSafeSourceUrl = /^https?:\/\//i.test(resolvedSourceUrl);
                         return (
                           <div className="border border-[#232832] bg-[#0d0f12] px-3 py-2">
-                            <a
-                              href={resolvedSourceUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex max-w-full items-center gap-1.5 font-mono text-[11px] text-emerald-300 hover:underline"
-                            >
-                              <span className="truncate">{resolvedSourceUrl}</span>
-                              <ExternalLink className="h-3 w-3 shrink-0" />
-                            </a>
+                            {isSafeSourceUrl ? (
+                              <a
+                                href={resolvedSourceUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex max-w-full items-center gap-1.5 font-mono text-[11px] text-emerald-300 hover:underline"
+                              >
+                                <span className="truncate">{resolvedSourceUrl}</span>
+                                <ExternalLink className="h-3 w-3 shrink-0" />
+                              </a>
+                            ) : (
+                              <span className="block truncate font-mono text-[11px] text-emerald-300">
+                                {resolvedSourceUrl}
+                              </span>
+                            )}
                             {activeRealEmails.length > 1 && (
                               <div className="mt-1 font-mono text-[10px] text-[#9aa3b2]">
                                 {activeRealEmails.length} real emails scraped — switch recipient in the To: bar on the right.
@@ -849,14 +856,18 @@ export function ReviewQueueView({
                     <div className="mt-1.5 space-y-1 font-mono text-[11px] text-[#697386]">
                       {Array.from(new Set(activeLead.pagesCrawled)).map((u, idx) => (
                         <div key={`${u}-${idx}`} className="truncate">
-                          <a
-                            href={u}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="hover:text-[#38bdf8] hover:underline"
-                          >
-                            {u}
-                          </a>
+                          {/^https?:\/\//i.test(u) ? (
+                            <a
+                              href={u}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="hover:text-[#38bdf8] hover:underline"
+                            >
+                              {u}
+                            </a>
+                          ) : (
+                            <span>{u}</span>
+                          )}
                         </div>
                       ))}
                     </div>

@@ -23,6 +23,24 @@ const PROFILE_STORAGE_KEY = 'civiclead_profile_v1';
 const SETTINGS_STORAGE_KEY = 'civiclead_user_settings_v1';
 const LEADS_STORAGE_KEY = 'civiclead_leads_v1';
 
+function sanitizeSettingsForBrowserStorage(s: UserSettings): UserSettings {
+  return {
+    ...s,
+    localConfig: {
+      ...s.localConfig,
+      apiKey: s.localConfig.apiKey ? '••••••••' : '',
+    },
+    externalConfig: {
+      ...s.externalConfig,
+      apiKey: s.externalConfig.apiKey ? '••••••••' : '',
+    },
+    searchConfig: {
+      ...s.searchConfig,
+      apiKey: s.searchConfig.apiKey ? '••••••••' : '',
+    },
+  };
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('discovery');
   const [profile, setProfile] = useState<ProductProfile>(() => {
@@ -80,7 +98,10 @@ export default function App() {
           if (sData.settings) {
             const normalized = normalizeUserSettings(sData.settings);
             setSettings(normalized);
-            localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(normalized));
+            localStorage.setItem(
+              SETTINGS_STORAGE_KEY,
+              JSON.stringify(sanitizeSettingsForBrowserStorage(normalized))
+            );
             if (!normalized.configured) {
               setEngineModalOpen(true);
             }
@@ -143,7 +164,10 @@ export default function App() {
   const handleSaveSettings = async (next: UserSettings) => {
     setSettings(next);
     try {
-      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
+      localStorage.setItem(
+        SETTINGS_STORAGE_KEY,
+        JSON.stringify(sanitizeSettingsForBrowserStorage(next))
+      );
     } catch {
       // Ignore storage quota errors
     }
@@ -155,7 +179,10 @@ export default function App() {
     if (res.ok) {
       const data = await res.json();
       setSettings(data.settings);
-      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(data.settings));
+      localStorage.setItem(
+        SETTINGS_STORAGE_KEY,
+        JSON.stringify(sanitizeSettingsForBrowserStorage(data.settings))
+      );
     }
   };
 

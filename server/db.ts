@@ -25,8 +25,13 @@ const dbPath = path.resolve(process.cwd(), './data/civiclead.db');
 
 let db: DatabaseSyncType;
 try {
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
   db = new DatabaseSync(dbPath);
+  try {
+    fs.chmodSync(dbPath, 0o600);
+  } catch {
+    // Best-effort permission hardening across filesystems
+  }
 } catch {
   db = new DatabaseSync(':memory:');
 }

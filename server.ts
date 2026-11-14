@@ -15,7 +15,6 @@ import {
   clearAllLeads,
   deleteLead,
   deleteLeadsBatch,
-  getDbPath,
   getLeadByDomain,
   getLeadById,
   getProfile,
@@ -29,6 +28,16 @@ import { discoverLocalBusinesses } from './server/discoverer.ts';
 import { enrichLead, fetchAvailableModels, testAiConnection } from './server/enricher.ts';
 import { buildBatchCsv, buildBatchPlainText } from './server/exporter.ts';
 import { buildRfc2822PlainTextDraft } from './server/gmailDraft.ts';
+import {
+  createRateLimiter,
+  csrfOriginGuardMiddleware,
+  getBindHost,
+  isValidPublicDomain,
+  maskUserSettings,
+  resolveApiKey,
+  sanitizeExternalHttpUrl,
+  securityHeadersMiddleware,
+} from './server/security.ts';
 import { getUserSettings, saveUserSettings } from './server/settings.ts';
 import { evaluateDeliverability, parseEnrichedJsonArray } from './src/shared/guardrails.ts';
 import {
@@ -36,14 +45,52 @@ import {
   normalizeProductProfile,
   type ExtractionMode,
   type LeadRecord,
+  type LeadStatus,
   type UserSettings,
 } from './src/shared/types.ts';
 
 const PORT = Number(process.env.PORT || 3000);
+const HOST = getBindHost();
+
+const VALID_LEAD_STATUSES = new Set<LeadStatus>([
+  'crawled',
+  'pending_review',
+  'approved',
+  'sent',
+  'rejected',
+]);
+
+function resolveAiRequestKey(baseUrl: string, incomingKey?: string): string {
+  const stored = getUserSettings();
+  const trimmedBase = baseUrl.trim().replace(/\/+$/, '').toLowerCase();
+  const localBase = stored.localConfig.baseUrl.trim().replace(/\/+$/, '').toLowerCase();
+  const externalBase = stored.externalConfig.baseUrl.trim().replace(/\/+$/, '').toLowerCase();
+  const storedKey =
+    trimmedBase && trimmedBase === localBase
+      ? stored.localConfig.apiKey
+      : trimmedBase && trimmedBase === externalBase
+        ? stored.externalConfig.apiKey
+        : stored.externalConfig.apiKey || stored.localConfig.apiKey;
+  const envFallback = trimmedBase.includes('generativelanguage.googleapis.com')
+    ? process.env.GEMINI_API_KEY
+    : trimmedBase.includes('api.openai.com')
+      ? process.env.OPENAI_API_KEY
+      : undefined;
+  return resolveApiKey(incomingKey, storedKey, envFallback);
+}
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '4mb' }));
+  app.disable('x-powered-by');
+  app.use(securityHeadersMiddleware);
+  app.use(express.json({ limit: '1mb' }));
+  app.use(csrfOriginGuardMiddleware);
+
+  const heavyLimiter = createRateLimiter({
+    windowMs: 60_000,
+    maxRequests: 30,
+    message: 'Rate limit exceeded. Please wait a moment before running another batch.',
+  });
 
   app.get('/favicon.ico', (_req, res) => {
     res.status(204).end();
@@ -52,19 +99,19 @@ async function startServer() {
   app.get('/api/health', (_req, res) => {
     res.json({
       ok: true,
-      dbPath: getDbPath(),
+      dbPath: './data/civiclead.db',
     });
   });
 
   app.get('/api/settings', (_req, res) => {
-    res.json({ settings: getUserSettings() });
+    res.json({ settings: maskUserSettings(getUserSettings()) });
   });
 
   app.put('/api/settings', (req, res) => {
     try {
-      const patch = req.body as Partial<UserSettings>;
+      const patch = (req.body || {}) as Partial<UserSettings>;
       const updated = saveUserSettings(patch);
-      res.json({ settings: updated });
+      res.json({ settings: maskUserSettings(updated) });
     } catch (err) {
       res.status(400).json({
         error: err instanceof Error ? err.message : 'Failed to save user settings',
@@ -78,9 +125,16 @@ async function startServer() {
 
   app.put('/api/profile', (req, res) => {
     try {
-      const incoming = req.body as Record<string, unknown>;
+      const incoming = (req.body || {}) as Record<string, unknown>;
       const current = getProfile();
-      const updated = saveProfile(normalizeProductProfile({ ...current, ...incoming }));
+      const merged = normalizeProductProfile({ ...current, ...incoming });
+      if (merged.websiteUrl) {
+        const candidateUrl = /^[a-z][a-z0-9+.-]*:/i.test(merged.websiteUrl)
+          ? merged.websiteUrl
+          : `https://${merged.websiteUrl}`;
+        merged.websiteUrl = sanitizeExternalHttpUrl(candidateUrl);
+      }
+      const updated = saveProfile(merged);
       res.json({ profile: updated });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to save profile' });
@@ -96,9 +150,9 @@ async function startServer() {
     res.json({ leads: listLeads(), draftLogs: listDraftLogs() });
   });
 
-  app.post('/api/discover', async (req, res) => {
+  app.post('/api/discover', heavyLimiter, async (req, res) => {
     try {
-      const { trade, location, searchConfig } = req.body as {
+      const { trade, location, searchConfig } = (req.body || {}) as {
         trade?: string;
         location?: string;
         searchConfig?: UserSettings['searchConfig'];
@@ -109,7 +163,28 @@ async function startServer() {
         res.status(400).json({ error: 'Both Target Trade/Keyword and Target Location are required.' });
         return;
       }
-      const activeSearchConfig = searchConfig || getUserSettings().searchConfig;
+      if (cleanTrade.length > 120 || cleanLocation.length > 120) {
+        res.status(400).json({ error: 'Target Trade and Location must each be 120 characters or fewer.' });
+        return;
+      }
+      const storedSettings = getUserSettings();
+      const rawSearchConfig = searchConfig || storedSettings.searchConfig;
+      const searchEnvFallback =
+        rawSearchConfig.provider === 'serper'
+          ? process.env.SERPER_API_KEY
+          : rawSearchConfig.provider === 'brave'
+            ? process.env.BRAVE_API_KEY
+            : rawSearchConfig.provider === 'tavily'
+              ? process.env.TAVILY_API_KEY
+              : undefined;
+      const activeSearchConfig: UserSettings['searchConfig'] = {
+        ...rawSearchConfig,
+        apiKey: resolveApiKey(
+          rawSearchConfig.apiKey,
+          storedSettings.searchConfig.apiKey,
+          searchEnvFallback
+        ),
+      };
       const data = await discoverLocalBusinesses(cleanTrade, cleanLocation, activeSearchConfig);
       res.json(data);
     } catch (err) {
@@ -119,7 +194,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/crawl', async (req, res) => {
+  app.post('/api/crawl', heavyLimiter, async (req, res) => {
     const body = req.body as {
       urls?: string[];
       targets?: Array<{ url: string; companyName?: string }>;
@@ -242,10 +317,11 @@ async function startServer() {
     });
   });
 
-  app.post('/api/ai/models', async (req, res) => {
+  app.post('/api/ai/models', heavyLimiter, async (req, res) => {
     const { baseUrl, apiKey } = (req.body || {}) as { baseUrl?: string; apiKey?: string };
     try {
-      const result = await fetchAvailableModels(baseUrl || '', apiKey);
+      const resolvedKey = resolveAiRequestKey(baseUrl || '', apiKey);
+      const result = await fetchAvailableModels(baseUrl || '', resolvedKey);
       res.json(result);
     } catch (err) {
       res.status(400).json({
@@ -255,14 +331,15 @@ async function startServer() {
     }
   });
 
-  app.post('/api/ai/test', async (req, res) => {
+  app.post('/api/ai/test', heavyLimiter, async (req, res) => {
     const { baseUrl, apiKey, modelId } = (req.body || {}) as {
       baseUrl?: string;
       apiKey?: string;
       modelId?: string;
     };
     try {
-      const result = await testAiConnection(baseUrl || '', apiKey, modelId || '');
+      const resolvedKey = resolveAiRequestKey(baseUrl || '', apiKey);
+      const result = await testAiConnection(baseUrl || '', resolvedKey, modelId || '');
       res.json(result);
     } catch (err) {
       res.status(400).json({
@@ -272,8 +349,8 @@ async function startServer() {
     }
   });
 
-  app.post('/api/enrich', async (req, res) => {
-    const body = req.body as {
+  app.post('/api/enrich', heavyLimiter, async (req, res) => {
+    const body = (req.body || {}) as {
       leadIds?: string[];
       overrideMode?: ExtractionMode;
       angleHint?: string;
@@ -289,8 +366,18 @@ async function startServer() {
       });
       return;
     }
-    const settings = getUserSettings();
-    const leadIds = Array.isArray(body.leadIds) ? body.leadIds : [];
+    let settings = getUserSettings();
+    const activeMode = body.overrideMode || settings.extractionMode;
+    if (activeMode === 'external_api' && !settings.externalConfig.apiKey.trim()) {
+      const envKey = resolveAiRequestKey(settings.externalConfig.baseUrl, '');
+      if (envKey) {
+        settings = {
+          ...settings,
+          externalConfig: { ...settings.externalConfig, apiKey: envKey },
+        };
+      }
+    }
+    const leadIds = Array.isArray(body.leadIds) ? body.leadIds.slice(0, 50) : [];
     if (leadIds.length === 0) {
       res.status(400).json({ error: 'Select at least one crawled lead to enrich.' });
       return;
@@ -373,11 +460,17 @@ async function startServer() {
       }
 
       const items = parseEnrichedJsonArray(rawJson);
+      if (items.length > 100) {
+        res.status(400).json({ error: 'Batch import is limited to 100 leads at a time.' });
+        return;
+      }
+
       const imported: LeadRecord[] = [];
       const now = new Date().toISOString();
 
       for (const item of items) {
         const { domain } = normalizeDomain(item.domain);
+        if (!isValidPublicDomain(domain)) continue;
         const existing = getLeadByDomain(domain);
 
         if (existing) {
@@ -461,6 +554,11 @@ async function startServer() {
         }
       }
 
+      if (items.length > 0 && imported.length === 0) {
+        res.status(400).json({ error: 'No valid public domains found in imported JSON.' });
+        return;
+      }
+
       res.json({
         importedCount: imported.length,
         imported,
@@ -479,25 +577,73 @@ async function startServer() {
       res.status(404).json({ error: 'Lead not found' });
       return;
     }
-    const patch = req.body as Partial<LeadRecord>;
-    let nextEmails = patch.discoveredEmails ?? existing.discoveredEmails;
+    const rawPatch = (req.body || {}) as Record<string, unknown>;
+    const sanitizedPatch: Partial<LeadRecord> = {};
 
-    if (typeof patch.recommendedEmail === 'string') {
-      const cleanedEmail = patch.recommendedEmail.trim().toLowerCase();
-      if (cleanedEmail) {
+    if (typeof rawPatch.companyName === 'string') {
+      sanitizedPatch.companyName = rawPatch.companyName.trim().slice(0, 200);
+    }
+    if (typeof rawPatch.tradeSpecialty === 'string') {
+      sanitizedPatch.tradeSpecialty = rawPatch.tradeSpecialty.trim().slice(0, 200);
+    }
+    if (typeof rawPatch.primaryContactName === 'string') {
+      sanitizedPatch.primaryContactName = rawPatch.primaryContactName.trim().slice(0, 150);
+    }
+    if (typeof rawPatch.detectedWorkflow === 'string') {
+      sanitizedPatch.detectedWorkflow = rawPatch.detectedWorkflow.trim().slice(0, 2000);
+    }
+    if (typeof rawPatch.civicTrigger === 'string') {
+      sanitizedPatch.civicTrigger = rawPatch.civicTrigger.trim().slice(0, 2000);
+    }
+    if (typeof rawPatch.isTargetFit === 'boolean') {
+      sanitizedPatch.isTargetFit = rawPatch.isTargetFit;
+    }
+    if (typeof rawPatch.fitWarning === 'string') {
+      sanitizedPatch.fitWarning = rawPatch.fitWarning.trim().slice(0, 500);
+    }
+    if (
+      rawPatch.threadStrategy === 'new_standalone' ||
+      rawPatch.threadStrategy === 'reply_existing'
+    ) {
+      sanitizedPatch.threadStrategy = rawPatch.threadStrategy;
+    }
+    if (typeof rawPatch.subjectLine === 'string') {
+      sanitizedPatch.subjectLine = rawPatch.subjectLine.slice(0, 300);
+    }
+    if (typeof rawPatch.plainTextBody === 'string') {
+      sanitizedPatch.plainTextBody = rawPatch.plainTextBody.slice(0, 10000);
+    }
+    if (
+      typeof rawPatch.status === 'string' &&
+      VALID_LEAD_STATUSES.has(rawPatch.status as LeadStatus)
+    ) {
+      sanitizedPatch.status = rawPatch.status as LeadStatus;
+    }
+
+    let nextEmails = existing.discoveredEmails;
+
+    if (typeof rawPatch.recommendedEmail === 'string') {
+      const cleanedEmail = rawPatch.recommendedEmail.trim().toLowerCase();
+      if (!cleanedEmail) {
+        sanitizedPatch.recommendedEmail = '';
+      } else {
         const alreadyExists = nextEmails.some(
           (e) => e.email.toLowerCase() === cleanedEmail
         );
         if (!alreadyExists) {
-          const emailDomain = cleanedEmail.split('@')[1] || existing.domain;
-          const mxInfo = await checkMxRecord(emailDomain);
+          const emailDomain = cleanedEmail.split('@')[1] || '';
+          const syntaxValid = isValidEmailSyntax(cleanedEmail);
+          const mxInfo =
+            syntaxValid && isValidPublicDomain(emailDomain)
+              ? await checkMxRecord(emailDomain)
+              : { mxValid: false };
           const { priority, reason } = classifyEmailPriority(cleanedEmail);
           nextEmails = sortEmailCandidates([
             {
               email: cleanedEmail,
               priority,
               source: 'manual_custom',
-              syntaxValid: isValidEmailSyntax(cleanedEmail),
+              syntaxValid,
               mxValid: mxInfo.mxValid,
               mxHost: mxInfo.mxHost,
               reason: `${reason} (Manual entry)`,
@@ -506,13 +652,13 @@ async function startServer() {
             ...nextEmails,
           ]);
         }
-        patch.recommendedEmail = cleanedEmail;
+        sanitizedPatch.recommendedEmail = cleanedEmail;
       }
     }
 
     const updated = upsertLead({
       ...existing,
-      ...patch,
+      ...sanitizedPatch,
       discoveredEmails: nextEmails,
       id: existing.id,
       domain: existing.domain,
@@ -676,8 +822,8 @@ export class ErrorOverlay {}
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`CivicLead Engine server listening on http://localhost:${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`CivicLead Engine server listening on http://${HOST}:${PORT}`);
   });
 }
 

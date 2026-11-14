@@ -2,10 +2,12 @@ import type { LeadRecord } from '../src/shared/types.ts';
 
 function escapeCsv(val: string): string {
   const str = String(val ?? '');
-  if (/[",\n\r]/.test(str)) {
-    return `"${str.replace(/"/g, '""')}"`;
+  const safe =
+    /^[=+\-@]/.test(str.trimStart()) || /^[\t\r]/.test(str) ? `'${str}` : str;
+  if (/[",\n\r]/.test(safe)) {
+    return `"${safe.replace(/"/g, '""')}"`;
   }
-  return str;
+  return safe;
 }
 
 export function buildBatchCsv(leads: LeadRecord[]): string {

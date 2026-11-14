@@ -6,10 +6,18 @@ import {
   type UserSettings,
 } from '../src/shared/types.ts';
 import { getStoredUserSettings, saveStoredUserSettings } from './db.ts';
+import { isMaskedApiKey } from './security.ts';
 
 const SETTINGS_FILE = path.resolve(process.cwd(), 'user-settings.json');
 
 let memorySettings: UserSettings | null = null;
+
+function preserveMaskedKey(incomingKey: string | undefined, currentKey: string): string {
+  if (incomingKey === undefined || isMaskedApiKey(incomingKey)) {
+    return currentKey;
+  }
+  return incomingKey;
+}
 
 export function getUserSettings(): UserSettings {
   const fromDb = getStoredUserSettings();
@@ -40,20 +48,37 @@ export function saveUserSettings(patch: Partial<UserSettings>): UserSettings {
   const next = normalizeUserSettings({
     ...current,
     ...patch,
+    dbPath: current.dbPath || './data/civiclead.db',
     localConfig: patch.localConfig
-      ? { ...current.localConfig, ...patch.localConfig }
+      ? {
+          ...current.localConfig,
+          ...patch.localConfig,
+          apiKey: preserveMaskedKey(patch.localConfig.apiKey, current.localConfig.apiKey),
+        }
       : current.localConfig,
     externalConfig: patch.externalConfig
-      ? { ...current.externalConfig, ...patch.externalConfig }
+      ? {
+          ...current.externalConfig,
+          ...patch.externalConfig,
+          apiKey: preserveMaskedKey(patch.externalConfig.apiKey, current.externalConfig.apiKey),
+        }
       : current.externalConfig,
     searchConfig: patch.searchConfig
-      ? { ...current.searchConfig, ...patch.searchConfig }
+      ? {
+          ...current.searchConfig,
+          ...patch.searchConfig,
+          apiKey: preserveMaskedKey(patch.searchConfig.apiKey, current.searchConfig.apiKey),
+        }
       : current.searchConfig,
   } as unknown as Record<string, unknown>);
 
   memorySettings = saveStoredUserSettings(next);
   try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(memorySettings, null, 2), 'utf8');
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(memorySettings, null, 2), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    fs.chmodSync(SETTINGS_FILE, 0o600);
   } catch {
     // Graceful fallback in read-only environments
   }

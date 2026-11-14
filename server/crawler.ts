@@ -2,6 +2,12 @@ import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import * as cheerio from 'cheerio';
 import type { EmailCandidate, EmailPriority, LeadRecord } from '../src/shared/types.ts';
+import {
+  assertSafePublicUrl,
+  isValidPublicDomain,
+  safeFetchHtml,
+  sanitizeExternalHttpUrl,
+} from './security.ts';
 
 const INTERNAL_LINK_REGEX =
   /(contact|about|team|leadership|staff|people|estimate|bid|connect|office|location|directory)/i;
@@ -145,9 +151,12 @@ const BROWSER_HEADERS = {
 };
 
 export function normalizeDomain(input: string): { domain: string; baseUrl: string } {
-  let clean = input.trim().toLowerCase();
-  clean = clean.replace(/^https?:\/\//, '').replace(/^www\./, '');
-  clean = clean.split('/')[0].split('?')[0].split('#')[0].split(':')[0];
+  let clean = (input || '').trim().toLowerCase();
+  clean = clean.replace(/^https?:\/\//, '');
+  clean = clean.replace(/^[^/]*@/, '');
+  clean = clean.replace(/^www\./, '');
+  clean = clean.split(/[/?#:\s]/)[0] || '';
+  clean = clean.replace(/^\.+|\.+$/g, '').replace(/[^a-z0-9.-]/g, '');
   return {
     domain: clean,
     baseUrl: `https://${clean}`,
@@ -262,6 +271,9 @@ export function sortEmailCandidates(candidates: EmailCandidate[]): EmailCandidat
 }
 
 export async function checkMxRecord(domain: string): Promise<{ mxValid: boolean; mxHost?: string }> {
+  if (!isValidPublicDomain(domain)) {
+    return { mxValid: false };
+  }
   try {
     const records = await Promise.race([
       dns.resolveMx(domain),
@@ -280,31 +292,19 @@ export async function checkMxRecord(domain: string): Promise<{ mxValid: boolean;
 async function fetchHtmlPage(
   url: string
 ): Promise<{ html: string; finalUrl: string } | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8500);
   try {
-    const res = await fetch(url, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
+    const res = await safeFetchHtml(url, {
+      timeoutMs: 8500,
+      maxBytes: 2 * 1024 * 1024,
       headers: BROWSER_HEADERS,
     });
-    if (!res.ok) return null;
-    const contentType = res.headers.get('content-type') || '';
-    if (
-      contentType &&
-      !contentType.includes('text/html') &&
-      !contentType.includes('application/xhtml')
-    ) {
-      return null;
+    if (!res) return null;
+    return { html: res.html, finalUrl: res.finalUrl };
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('private or reserved IP')) {
+      throw err;
     }
-    const html = await res.text();
-    if (!html || html.trim().length < 40) return null;
-    return { html, finalUrl: res.url || url };
-  } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -632,10 +632,28 @@ export async function crawlTargetDomain(
 ): Promise<LeadRecord> {
   const { domain, baseUrl } = normalizeDomain(rawUrl);
 
-  if (!domain || !domain.includes('.')) {
-    throw new Error(`Invalid domain or URL: "${rawUrl}"`);
+  if (!domain || !isValidPublicDomain(domain)) {
+    throw new Error(`Invalid or non-public domain: "${rawUrl}"`);
   }
 
+  try {
+    await assertSafePublicUrl(baseUrl);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '';
+    if (msg.includes('private or reserved IP')) {
+      throw err;
+    }
+    try {
+      await assertSafePublicUrl(`https://www.${domain}/`);
+    } catch (wwwErr) {
+      const wwwMsg = wwwErr instanceof Error ? wwwErr.message : '';
+      if (wwwMsg.includes('private or reserved IP')) {
+        throw wwwErr;
+      }
+    }
+  }
+
+  const safeInputUrl = sanitizeExternalHttpUrl(rawUrl) || baseUrl;
   const preferredName = options?.preferredCompanyName
     ? collapseDoubledCompanyName(options.preferredCompanyName)
     : '';
@@ -653,7 +671,7 @@ export async function crawlTargetDomain(
     return {
       id: crypto.randomUUID(),
       domain,
-      inputUrl: rawUrl || baseUrl,
+      inputUrl: safeInputUrl,
       status: 'crawled',
       crawlMode: 'blocked',
       crawlNote: rootMx.mxValid
@@ -685,14 +703,18 @@ export async function crawlTargetDomain(
   const internalUrls = discoverInternalLinks(rootFetch.html, rootFetch.finalUrl);
   const subPageResults = await Promise.all(
     internalUrls.map(async (targetUrl) => {
-      const fetched = await fetchHtmlPage(targetUrl);
-      if (!fetched) return null;
-      const pathname = new URL(fetched.finalUrl).pathname || '/';
-      return {
-        url: fetched.finalUrl,
-        path: pathname,
-        signals: extractPageSignals(fetched.html, domain),
-      };
+      try {
+        const fetched = await fetchHtmlPage(targetUrl);
+        if (!fetched) return null;
+        const pathname = new URL(fetched.finalUrl).pathname || '/';
+        return {
+          url: fetched.finalUrl,
+          path: pathname,
+          signals: extractPageSignals(fetched.html, domain),
+        };
+      } catch {
+        return null;
+      }
     })
   );
 
@@ -769,7 +791,7 @@ export async function crawlTargetDomain(
   return {
     id: crypto.randomUUID(),
     domain,
-    inputUrl: rawUrl,
+    inputUrl: safeInputUrl,
     status: 'crawled',
     crawlMode: 'live',
     crawlNote: rootFetch.usedWwwFallback ? 'Resolved via www. fallback' : undefined,
