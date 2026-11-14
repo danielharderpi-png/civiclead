@@ -16,3 +16,5 @@ data/
 user-settings.json
 credentials.json
 token.json
+CivicLead.exe
+*.blob

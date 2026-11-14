@@ -11,6 +11,7 @@ import {
   type ProductProfile,
   type UserSettings,
 } from '../src/shared/types.ts';
+import { getAppBaseDir } from './runtime.ts';
 
 const originalEmitWarning = process.emitWarning.bind(process);
 process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
@@ -19,9 +20,9 @@ process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
   return (originalEmitWarning as (...a: unknown[]) => void)(warning, ...args);
 }) as typeof process.emitWarning;
 
-const { DatabaseSync } = await import('node:sqlite');
+const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
 
-const dbPath = path.resolve(process.cwd(), './data/civiclead.db');
+const dbPath = path.resolve(getAppBaseDir(), './data/civiclead.db');
 
 let db: DatabaseSyncType;
 try {

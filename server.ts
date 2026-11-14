@@ -1,7 +1,6 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import express from 'express';
 import path from 'node:path';
-import { createServer as createViteServer } from 'vite';
 import {
   checkMxRecord,
   classifyEmailPriority,
@@ -29,6 +28,14 @@ import { enrichLead, fetchAvailableModels, testAiConnection } from './server/enr
 import { buildBatchCsv, buildBatchPlainText } from './server/exporter.ts';
 import { buildRfc2822PlainTextDraft } from './server/gmailDraft.ts';
 import {
+  getAppBaseDir,
+  getEmbeddedAsset,
+  getMimeType,
+  hasEmbeddedAssets,
+  isSeaRuntime,
+  openBrowser,
+} from './server/runtime.ts';
+import {
   createRateLimiter,
   csrfOriginGuardMiddleware,
   getBindHost,
@@ -48,6 +55,11 @@ import {
   type LeadStatus,
   type UserSettings,
 } from './src/shared/types.ts';
+
+dotenv.config({ path: path.resolve(getAppBaseDir(), '.env'), quiet: true });
+if (isSeaRuntime() && !process.env.NODE_ENV) {
+  process.env.NODE_ENV = 'production';
+}
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = getBindHost();
@@ -758,9 +770,15 @@ async function startServer() {
     });
   });
 
-  if (process.env.NODE_ENV !== 'production') {
+  const isProduction = isSeaRuntime() || process.env.NODE_ENV === 'production';
+
+  if (!isProduction) {
     process.env.DISABLE_HMR = 'true';
     process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING = 'true';
+    const viteModuleId = 'vite';
+    const { createServer: createViteServer } = (await import(
+      viteModuleId
+    )) as typeof import('vite');
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
@@ -814,16 +832,72 @@ export class ErrorOverlay {}
     });
 
     app.use(vite.middlewares);
+  } else if (hasEmbeddedAssets()) {
+    app.use((req, res, next) => {
+      if ((req.method !== 'GET' && req.method !== 'HEAD') || req.path.startsWith('/api/')) {
+        next();
+        return;
+      }
+      const assetKey = req.path === '/' ? 'index.html' : req.path.replace(/^\/+/, '');
+      const asset = getEmbeddedAsset(assetKey);
+      if (!asset) {
+        next();
+        return;
+      }
+      res.setHeader('Content-Type', getMimeType(assetKey));
+      res.setHeader(
+        'Cache-Control',
+        assetKey.startsWith('assets/') ? 'public, max-age=31536000, immutable' : 'no-cache'
+      );
+      res.status(200).send(asset);
+    });
+
+    app.get('*', (_req, res) => {
+      const indexAsset = getEmbeddedAsset('index.html');
+      if (!indexAsset) {
+        res.status(404).send('Frontend assets missing from bundle.');
+        return;
+      }
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.status(200).send(indexAsset);
+    });
   } else {
-    const distDir = path.resolve(process.cwd(), 'dist');
+    const distDir = path.resolve(getAppBaseDir(), 'dist');
     app.use(express.static(distDir));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   }
 
-  app.listen(PORT, HOST, () => {
-    console.log(`CivicLead Engine server listening on http://${HOST}:${PORT}`);
+  const browserHost = HOST === '0.0.0.0' || HOST === '::' ? '127.0.0.1' : HOST;
+  const appUrl = `http://${browserHost}:${PORT}`;
+  const shouldOpenBrowser =
+    isSeaRuntime() &&
+    process.env.CIVICLEAD_NO_OPEN !== '1' &&
+    !process.argv.includes('--no-open');
+
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`CivicLead Engine server listening on ${appUrl}`);
+    if (isSeaRuntime()) {
+      console.log(`Local SQLite ledger: ${path.resolve(getAppBaseDir(), './data/civiclead.db')}`);
+      console.log('Keep this window open while using CivicLead Engine. Press Ctrl+C to stop.');
+      if (shouldOpenBrowser) {
+        openBrowser(appUrl);
+      }
+    }
+  });
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' && isSeaRuntime()) {
+      console.log(`CivicLead Engine is already running on ${appUrl} — opening in browser...`);
+      if (shouldOpenBrowser) {
+        openBrowser(appUrl);
+      }
+      process.exit(0);
+    }
+    console.error('Server failed to start:', err);
+    process.exit(1);
   });
 }
 

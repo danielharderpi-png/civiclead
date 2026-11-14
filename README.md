@@ -136,6 +136,16 @@ npm run build
 NODE_ENV=production npm start
 ```
 
+### Build Standalone Windows Executable (.exe)
+
+Package CivicLead Engine into a single self-contained, zero-dependency portable `CivicLead.exe` (using Node.js Single Executable Applications with embedded frontend assets and built-in `node:sqlite`):
+
+```bash
+npm run build:exe
+```
+
+Double-clicking `CivicLead.exe` (or running it from a terminal) starts the local server on `http://127.0.0.1:3000`, automatically opens the UI in your default browser, and stores `./data/civiclead.db` and `user-settings.json` portably alongside `CivicLead.exe`. Pass `--no-open` (or set `CIVICLEAD_NO_OPEN=1`) to skip launching the browser automatically.
+
 ---
 
 ## Environment Variables

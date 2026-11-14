@@ -6,9 +6,10 @@ import {
   type UserSettings,
 } from '../src/shared/types.ts';
 import { getStoredUserSettings, saveStoredUserSettings } from './db.ts';
+import { getAppBaseDir } from './runtime.ts';
 import { isMaskedApiKey } from './security.ts';
 
-const SETTINGS_FILE = path.resolve(process.cwd(), 'user-settings.json');
+const SETTINGS_FILE = path.resolve(getAppBaseDir(), 'user-settings.json');
 
 let memorySettings: UserSettings | null = null;
 

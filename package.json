@@ -33,6 +33,9 @@
     "dev": "tsx server.ts",
     "start": "node server.ts",
     "build": "vite build",
+    "build:assets": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-store-assets.ps1",
+    "build:exe": "node scripts/build-exe.mjs",
+    "package": "node scripts/build-exe.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
