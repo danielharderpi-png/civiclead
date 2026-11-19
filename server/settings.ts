@@ -46,6 +46,26 @@ export function getUserSettings(): UserSettings {
 
 export function saveUserSettings(patch: Partial<UserSettings>): UserSettings {
   const current = getUserSettings();
+  const nextSearchProvider = patch.searchConfig?.provider ?? current.searchConfig.provider;
+  const nextSearchConfig = patch.searchConfig
+    ? nextSearchProvider === 'builtin_zero_key'
+      ? {
+          provider: 'builtin_zero_key' as const,
+          apiKey: '',
+          customEndpoint: '',
+        }
+      : {
+          ...current.searchConfig,
+          ...patch.searchConfig,
+          apiKey:
+            nextSearchProvider === current.searchConfig.provider
+              ? preserveMaskedKey(patch.searchConfig.apiKey, current.searchConfig.apiKey)
+              : isMaskedApiKey(patch.searchConfig.apiKey)
+                ? ''
+                : (patch.searchConfig.apiKey ?? ''),
+        }
+    : current.searchConfig;
+
   const next = normalizeUserSettings({
     ...current,
     ...patch,
@@ -64,13 +84,7 @@ export function saveUserSettings(patch: Partial<UserSettings>): UserSettings {
           apiKey: preserveMaskedKey(patch.externalConfig.apiKey, current.externalConfig.apiKey),
         }
       : current.externalConfig,
-    searchConfig: patch.searchConfig
-      ? {
-          ...current.searchConfig,
-          ...patch.searchConfig,
-          apiKey: preserveMaskedKey(patch.searchConfig.apiKey, current.searchConfig.apiKey),
-        }
-      : current.searchConfig,
+    searchConfig: nextSearchConfig,
   } as unknown as Record<string, unknown>);
 
   memorySettings = saveStoredUserSettings(next);

@@ -254,7 +254,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
 const VALID_PRESETS = new Set<ProviderPresetId>(PROVIDER_PRESETS.map((p) => p.id));
 const VALID_SEARCH_PROVIDERS = new Set<SearchApiProvider>(SEARCH_PROVIDERS.map((p) => p.id));
 
-function normalizeSearchConfig(raw?: Partial<SearchApiConfig> | null): SearchApiConfig {
+export function normalizeSearchConfig(raw?: Partial<SearchApiConfig> | null): SearchApiConfig {
   if (!raw || typeof raw !== 'object') {
     return { ...BLANK_SEARCH_CONFIG };
   }

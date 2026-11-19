@@ -50,6 +50,7 @@ import { evaluateDeliverability, parseEnrichedJsonArray } from './src/shared/gua
 import {
   BLANK_PRODUCT_PROFILE,
   normalizeProductProfile,
+  normalizeSearchConfig,
   type ExtractionMode,
   type LeadRecord,
   type LeadStatus,
@@ -180,7 +181,7 @@ async function startServer() {
         return;
       }
       const storedSettings = getUserSettings();
-      const rawSearchConfig = searchConfig || storedSettings.searchConfig;
+      const rawSearchConfig = normalizeSearchConfig(searchConfig ?? storedSettings.searchConfig);
       const searchEnvFallback =
         rawSearchConfig.provider === 'serper'
           ? process.env.SERPER_API_KEY
@@ -189,14 +190,19 @@ async function startServer() {
             : rawSearchConfig.provider === 'tavily'
               ? process.env.TAVILY_API_KEY
               : undefined;
-      const activeSearchConfig: UserSettings['searchConfig'] = {
-        ...rawSearchConfig,
-        apiKey: resolveApiKey(
-          rawSearchConfig.apiKey,
-          storedSettings.searchConfig.apiKey,
-          searchEnvFallback
-        ),
-      };
+      const activeSearchConfig: UserSettings['searchConfig'] =
+        rawSearchConfig.provider === 'builtin_zero_key'
+          ? { provider: 'builtin_zero_key', apiKey: '', customEndpoint: '' }
+          : {
+              ...rawSearchConfig,
+              apiKey: resolveApiKey(
+                rawSearchConfig.apiKey,
+                rawSearchConfig.provider === storedSettings.searchConfig.provider
+                  ? storedSettings.searchConfig.apiKey
+                  : undefined,
+                searchEnvFallback
+              ),
+            };
       const data = await discoverLocalBusinesses(cleanTrade, cleanLocation, activeSearchConfig);
       res.json(data);
     } catch (err) {

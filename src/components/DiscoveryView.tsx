@@ -37,6 +37,30 @@ import {
   type UserSettings,
 } from '../shared/types.ts';
 
+const LAST_LOCATION_STORAGE_KEY = 'civiclead_last_location_v1';
+const RECENT_LOCATIONS_STORAGE_KEY = 'civiclead_recent_locations_v1';
+
+function suggestBroaderTrade(trade: string): string | undefined {
+  const cleanTrade = (trade || '').trim().replace(/\s+/g, ' ');
+  if (!cleanTrade) return undefined;
+  const cleanedTradeForQuery = cleanTrade.replace(/[&/]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (/[&/,]/.test(cleanTrade)) {
+    const firstSeg =
+      cleanTrade
+        .split(/[&/,]/)[0]
+        ?.replace(/\s+/g, ' ')
+        .trim() || '';
+    if (firstSeg && firstSeg.toLowerCase() !== cleanedTradeForQuery.toLowerCase()) {
+      return firstSeg;
+    }
+  }
+  const words = cleanedTradeForQuery.split(/\s+/).filter(Boolean);
+  if (words.length >= 3) {
+    return words.slice(0, 2).join(' ');
+  }
+  return undefined;
+}
+
 interface DiscoveryViewProps {
   leads: LeadRecord[];
   profile: ProductProfile;
@@ -62,8 +86,29 @@ export function DiscoveryView({
 }: DiscoveryViewProps) {
   // 00. Local Business Auto-Discovery state
   const quickTrades = profile.targetTrades;
+  const initialTradeAppliedRef = useRef(false);
   const [searchTrade, setSearchTrade] = useState(profile.targetTrades[0] || '');
-  const [searchLocation, setSearchLocation] = useState('');
+  const [searchLocation, setSearchLocation] = useState(() => {
+    try {
+      return localStorage.getItem(LAST_LOCATION_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [recentLocations, setRecentLocations] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(RECENT_LOCATIONS_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+        .slice(0, 5);
+    } catch {
+      return [];
+    }
+  });
   const [discovering, setDiscovering] = useState(false);
   const [discoveredList, setDiscoveredList] = useState<DiscoveredBusiness[]>([]);
   const [selectedDiscoveredIds, setSelectedDiscoveredIds] = useState<string[]>([]);
@@ -71,6 +116,13 @@ export function DiscoveryView({
     providerUsed?: SearchApiProvider;
     sources: { yellowpages: number; duckduckgo: number; searchApi?: number };
     rateLimited: boolean;
+    fallbackNote?: string;
+    queryUsed?: string;
+  } | null>(null);
+  const [discoverNotice, setDiscoverNotice] = useState<{
+    kind: 'rate_limited' | 'no_results' | 'api_error';
+    message: string;
+    broaderTrade?: string;
   } | null>(null);
   const [showSearchPromptFallback, setShowSearchPromptFallback] = useState(false);
   const [enhanceSearchOpen, setEnhanceSearchOpen] = useState(false);
@@ -133,6 +185,50 @@ export function DiscoveryView({
   useEffect(() => {
     setSearchConfigDraft(settings.searchConfig);
   }, [settings.searchConfig]);
+
+  useEffect(() => {
+    if (!initialTradeAppliedRef.current) {
+      if (searchTrade.trim()) {
+        initialTradeAppliedRef.current = true;
+      } else if (profile.targetTrades[0]) {
+        setSearchTrade(profile.targetTrades[0]);
+        initialTradeAppliedRef.current = true;
+      }
+    }
+  }, [profile.targetTrades, searchTrade]);
+
+  const existingLeadDomains = useMemo(
+    () => new Set(leads.map((l) => l.domain.toLowerCase())),
+    [leads]
+  );
+
+  const newDiscoveredIds = useMemo(
+    () =>
+      discoveredList
+        .filter((item) => !existingLeadDomains.has(item.domain.toLowerCase()))
+        .map((item) => item.id),
+    [discoveredList, existingLeadDomains]
+  );
+  const newDiscoveredCount = newDiscoveredIds.length;
+  const alreadyInTargetsCount = discoveredList.length - newDiscoveredCount;
+
+  const discoverSourceBreakdown = useMemo(() => {
+    if (!discoverMeta) return '';
+    if (discoverMeta.providerUsed && discoverMeta.providerUsed !== 'builtin_zero_key') {
+      const label =
+        SEARCH_PROVIDERS.find((p) => p.id === discoverMeta.providerUsed)?.label ||
+        discoverMeta.providerUsed;
+      return ` (${label}: ${discoverMeta.sources.searchApi ?? discoveredList.length})`;
+    }
+    const parts: string[] = [];
+    if (discoverMeta.sources.duckduckgo > 0) {
+      parts.push(`DuckDuckGo: ${discoverMeta.sources.duckduckgo}`);
+    }
+    if (discoverMeta.sources.yellowpages > 0) {
+      parts.push(`YellowPages: ${discoverMeta.sources.yellowpages}`);
+    }
+    return parts.length > 0 ? ` (${parts.join(' · ')})` : '';
+  }, [discoverMeta, discoveredList.length]);
 
   const crawledOrAll = useMemo(() => leads, [leads]);
 
@@ -237,6 +333,51 @@ export function DiscoveryView({
       Boolean(settings.searchConfig.customEndpoint.trim())) ||
       (settings.searchConfig.provider !== 'custom' && Boolean(settings.searchConfig.apiKey.trim())));
 
+  const activeSearchProviderLabel = isExternalSearchActive
+    ? SEARCH_PROVIDERS.find((p) => p.id === settings.searchConfig.provider)?.label ||
+      settings.searchConfig.provider
+    : 'Zero-Key Built-in Scraper ($0.00)';
+
+  const hasUnsavedSearchDraft =
+    searchConfigDraft.provider !== settings.searchConfig.provider ||
+    searchConfigDraft.apiKey !== settings.searchConfig.apiKey ||
+    searchConfigDraft.customEndpoint !== settings.searchConfig.customEndpoint;
+
+  const closeSearchDrawer = () => {
+    setEnhanceSearchOpen(false);
+    setSearchConfigDraft(settings.searchConfig);
+  };
+
+  const rememberLocation = (loc: string) => {
+    const trimmed = loc.trim();
+    if (!trimmed) return;
+    try {
+      localStorage.setItem(LAST_LOCATION_STORAGE_KEY, trimmed);
+      setRecentLocations((prev) => {
+        const next = [
+          trimmed,
+          ...prev.filter((item) => item.toLowerCase() !== trimmed.toLowerCase()),
+        ].slice(0, 5);
+        localStorage.setItem(RECENT_LOCATIONS_STORAGE_KEY, JSON.stringify(next));
+        return next;
+      });
+    } catch {
+      // Ignore browser storage quota errors
+    }
+  };
+
+  const removeRecentLocation = (loc: string) => {
+    setRecentLocations((prev) => {
+      const next = prev.filter((item) => item.toLowerCase() !== loc.toLowerCase());
+      try {
+        localStorage.setItem(RECENT_LOCATIONS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore browser storage errors
+      }
+      return next;
+    });
+  };
+
   const handleSaveSearchConfig = async (nextConfig: SearchApiConfig) => {
     setSavingSearchConfig(true);
     setFeedback(null);
@@ -258,33 +399,55 @@ export function DiscoveryView({
     }
   };
 
-  const handleDiscoverBusinesses = async (e?: React.FormEvent) => {
+  const handleDiscoverBusinesses = async (
+    e?: React.FormEvent,
+    options?: { tradeOverride?: string; forceBuiltin?: boolean }
+  ) => {
     e?.preventDefault();
-    if (!searchTrade.trim() || !searchLocation.trim()) {
+    const effectiveTrade = (options?.tradeOverride ?? searchTrade).trim();
+    const effectiveLocation = searchLocation.trim();
+    if (options?.tradeOverride !== undefined) {
+      setSearchTrade(options.tradeOverride);
+    }
+    if (!effectiveTrade || !effectiveLocation) {
       setFeedback({
         type: 'error',
-        text: 'Enter both a Target Trade / Keyword and a Target Location.',
+        text: 'Enter both a Target Trade / Keyword and a Target City / Region.',
       });
       return;
     }
+
+    rememberLocation(effectiveLocation);
     setFeedback(null);
+    setDiscoverNotice(null);
     setDiscovering(true);
+
     try {
-      const searchChanged =
-        searchConfigDraft.provider !== settings.searchConfig.provider ||
-        searchConfigDraft.apiKey !== settings.searchConfig.apiKey ||
-        searchConfigDraft.customEndpoint !== settings.searchConfig.customEndpoint;
-      if (searchChanged) {
-        await onUpdateSettings({ searchConfig: searchConfigDraft });
+      let configToUse: SearchApiConfig = enhanceSearchOpen
+        ? searchConfigDraft
+        : settings.searchConfig;
+
+      if (options?.forceBuiltin) {
+        configToUse = BLANK_SEARCH_CONFIG;
+        setSearchConfigDraft(BLANK_SEARCH_CONFIG);
+        await onUpdateSettings({ searchConfig: BLANK_SEARCH_CONFIG });
+      } else if (enhanceSearchOpen) {
+        const searchChanged =
+          searchConfigDraft.provider !== settings.searchConfig.provider ||
+          searchConfigDraft.apiKey !== settings.searchConfig.apiKey ||
+          searchConfigDraft.customEndpoint !== settings.searchConfig.customEndpoint;
+        if (searchChanged) {
+          await onUpdateSettings({ searchConfig: searchConfigDraft });
+        }
       }
 
       const res = await fetch('/api/discover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          trade: searchTrade.trim(),
-          location: searchLocation.trim(),
-          searchConfig: searchConfigDraft,
+          trade: effectiveTrade,
+          location: effectiveLocation,
+          searchConfig: configToUse,
         }),
       });
       const data = await res.json();
@@ -292,36 +455,54 @@ export function DiscoveryView({
 
       const results = Array.isArray(data.results) ? (data.results as DiscoveredBusiness[]) : [];
       setDiscoveredList(results);
-      setSelectedDiscoveredIds(results.map((r) => r.id));
+      const newIds = results
+        .filter((r) => !existingLeadDomains.has(r.domain.toLowerCase()))
+        .map((r) => r.id);
+      setSelectedDiscoveredIds(newIds);
+
       const providerUsed = (data.providerUsed as SearchApiProvider) || 'builtin_zero_key';
       setDiscoverMeta({
         providerUsed,
         sources: data.sources || { yellowpages: 0, duckduckgo: 0, searchApi: 0 },
         rateLimited: Boolean(data.rateLimited),
+        fallbackNote: typeof data.fallbackNote === 'string' ? data.fallbackNote : undefined,
+        queryUsed: typeof data.queryUsed === 'string' ? data.queryUsed : undefined,
       });
 
       if (results.length === 0) {
-        setShowSearchPromptFallback(true);
-        setFeedback({
-          type: 'error',
-          text: data.rateLimited
-            ? 'Public search engines rate-limited this request. Configure an optional Search API above or use the Zero-API Directory Search Prompt.'
-            : `No direct company domains found for "${searchTrade}" in "${searchLocation}". Try a broader trade keyword or use the Zero-API Directory Search Prompt.`,
-        });
+        const broaderTrade = suggestBroaderTrade(effectiveTrade);
+        if (data.rateLimited) {
+          setDiscoverNotice({
+            kind: 'rate_limited',
+            message:
+              'Public search engines temporarily throttled automated requests from this IP. Retry in a moment, use the copyable Search Prompt, or configure an optional Search API.',
+            broaderTrade,
+          });
+        } else {
+          setDiscoverNotice({
+            kind: 'no_results',
+            message: `No direct company websites matched "${effectiveTrade}" in "${effectiveLocation}" (social profiles and directory sites like Yelp or YellowPages are filtered out).`,
+            broaderTrade,
+          });
+        }
       } else {
         const usedLabel =
           providerUsed === 'builtin_zero_key'
-            ? '$0.00 cost'
+            ? '$0.00 Built-in Scraper'
             : `${SEARCH_PROVIDERS.find((p) => p.id === providerUsed)?.label || providerUsed}`;
+        const alreadyCount = results.length - newIds.length;
         setFeedback({
           type: 'info',
-          text: `Discovered ${results.length} official company domains for "${searchTrade}" in ${searchLocation} (${usedLabel}). Select domains and click "Send Selected to Crawler & Run".`,
+          text:
+            alreadyCount > 0
+              ? `Discovered ${results.length} official company domains for "${effectiveTrade}" in ${effectiveLocation} (${usedLabel}) · ${newIds.length} new, ${alreadyCount} already in Targets.`
+              : `Discovered ${results.length} official company domains for "${effectiveTrade}" in ${effectiveLocation} (${usedLabel}). Select domains and click "Send Selected to Crawler & Run".`,
         });
       }
     } catch (err) {
-      setFeedback({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Discovery search failed',
+      setDiscoverNotice({
+        kind: 'api_error',
+        message: err instanceof Error ? err.message : 'Discovery search failed',
       });
     } finally {
       setDiscovering(false);
@@ -340,6 +521,8 @@ export function DiscoveryView({
         companyName: s.companyName,
       }))
     );
+    const sentIds = new Set(selected.map((s) => s.id));
+    setSelectedDiscoveredIds((prev) => prev.filter((id) => !sentIds.has(id)));
   };
 
   const getDiscoveredExportScope = () => {
@@ -941,25 +1124,30 @@ export function DiscoveryView({
       <section className="border border-[#232832] bg-[#13161b] p-5">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#232832] pb-3">
           <div>
-            <h2 className="text-sm font-semibold text-[#e6e9ef]">
-              Local Business Search{' '}
-              <span className="font-mono text-xs font-normal text-[#38bdf8]">
-                {isExternalSearchActive ? '(Search API)' : '($0.00)'}
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold text-[#e6e9ef]">Local Business Search</h2>
+              <span
+                className={`inline-flex items-center gap-1 border px-2 py-0.5 font-mono text-[11px] ${
+                  isExternalSearchActive
+                    ? 'border-[#f59e0b]/50 bg-[#1a150b] text-[#f59e0b]'
+                    : 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300'
+                }`}
+              >
+                {isExternalSearchActive
+                  ? `${activeSearchProviderLabel} · Search API`
+                  : 'Built-in Scraper · $0.00 (Default)'}
               </span>
-            </h2>
-            <p className="mt-0.5 text-xs text-[#9aa3b2]">
+            </div>
+            <p className="mt-1 text-xs text-[#9aa3b2]">
               {isExternalSearchActive
-                ? `Using ${
-                    SEARCH_PROVIDERS.find((p) => p.id === settings.searchConfig.provider)?.label ||
-                    settings.searchConfig.provider
-                  } to pull company domains.`
-                : 'Queries public listings and filters out directory/social domains.'}
+                ? `Using ${activeSearchProviderLabel} to pull company domains.`
+                : 'Ready out of the box — queries public search listings and filters out directory/social domains.'}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => setEnhanceSearchOpen((v) => !v)}
+              onClick={() => (enhanceSearchOpen ? closeSearchDrawer() : setEnhanceSearchOpen(true))}
               className={`inline-flex items-center gap-1.5 border px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors ${
                 enhanceSearchOpen || isExternalSearchActive
                   ? 'border-[#f59e0b]/70 bg-[#171b21] text-[#f59e0b]'
@@ -967,7 +1155,7 @@ export function DiscoveryView({
               }`}
             >
               <SlidersHorizontal className="h-3.5 w-3.5" />
-              Search API
+              Search Source
             </button>
             <button
               type="button"
@@ -985,16 +1173,23 @@ export function DiscoveryView({
           <div className="mt-4 space-y-3 border border-[#323947] bg-[#0d0f12] p-4">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#232832] pb-2">
               <div>
-                <span className="font-mono text-xs font-semibold text-[#f59e0b]">
-                  Optional Search API Enhancement
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs font-semibold text-[#f59e0b]">
+                    Optional Search API Enhancement
+                  </span>
+                  {hasUnsavedSearchDraft && (
+                    <span className="border border-[#f59e0b]/40 bg-[#1a150b] px-1.5 py-0.5 font-mono text-[10px] text-[#f59e0b]">
+                      Unsaved changes
+                    </span>
+                  )}
+                </div>
                 <p className="mt-0.5 text-[11px] text-[#9aa3b2]">
                   Saved locally in SQLite &amp; <span className="font-mono text-[#e6e9ef]">user-settings.json</span>. Leave on Default ($0.00) or blank to use the built-in zero-key scraper.
                 </p>
               </div>
               <button
                 type="button"
-                onClick={() => setEnhanceSearchOpen(false)}
+                onClick={closeSearchDrawer}
                 className="border border-[#232832] px-2.5 py-1 text-[11px] text-[#9aa3b2] hover:text-[#e6e9ef]"
               >
                 Collapse
@@ -1006,12 +1201,25 @@ export function DiscoveryView({
                 <span className="text-[11px] text-[#9aa3b2]">Search Provider</span>
                 <select
                   value={searchConfigDraft.provider}
-                  onChange={(e) =>
-                    setSearchConfigDraft((prev) => ({
-                      ...prev,
-                      provider: e.target.value as SearchApiProvider,
-                    }))
-                  }
+                  onChange={(e) => {
+                    const nextProvider = e.target.value as SearchApiProvider;
+                    setSearchConfigDraft((prev) => {
+                      if (nextProvider === 'builtin_zero_key') {
+                        return { provider: 'builtin_zero_key', apiKey: '', customEndpoint: '' };
+                      }
+                      const nextApiKey =
+                        nextProvider === settings.searchConfig.provider
+                          ? prev.apiKey || settings.searchConfig.apiKey
+                          : prev.apiKey.startsWith('••••••••')
+                            ? ''
+                            : prev.apiKey;
+                      return {
+                        ...prev,
+                        provider: nextProvider,
+                        apiKey: nextApiKey,
+                      };
+                    });
+                  }}
                   className="mt-1 w-full border border-[#232832] bg-[#13161b] px-3 py-2 text-xs text-[#e6e9ef] focus:border-[#f59e0b] focus:outline-none"
                 >
                   {SEARCH_PROVIDERS.map((p) => (
@@ -1159,6 +1367,36 @@ export function DiscoveryView({
                   className="w-full border border-[#232832] bg-[#0d0f12] py-2 pr-3 pl-9 text-xs text-[#e6e9ef] placeholder:text-[#697386] focus:border-[#f59e0b] focus:outline-none"
                 />
               </div>
+              {recentLocations.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {recentLocations.map((loc) => (
+                    <span
+                      key={loc}
+                      className={`inline-flex items-center border text-[11px] transition-colors ${
+                        searchLocation.trim().toLowerCase() === loc.toLowerCase()
+                          ? 'border-[#f59e0b] bg-[#171b21] text-[#f59e0b]'
+                          : 'border-[#232832] bg-[#0d0f12] text-[#9aa3b2]'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setSearchLocation(loc)}
+                        className="px-2.5 py-1 hover:text-[#e6e9ef] whitespace-nowrap"
+                      >
+                        {loc}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeRecentLocation(loc)}
+                        aria-label={`Remove saved location ${loc}`}
+                        className="border-l border-[#232832] px-1.5 py-1 text-[#697386] hover:text-red-400"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="flex items-start lg:col-span-3 lg:pt-6">
@@ -1177,6 +1415,96 @@ export function DiscoveryView({
             </div>
           </div>
         </form>
+
+        {/* Contextual Empty / Retry / Fallback Notice */}
+        {discoverNotice && (
+          <div
+            className={`mt-4 flex flex-wrap items-center justify-between gap-3 border px-4 py-3 text-xs ${
+              discoverNotice.kind === 'api_error'
+                ? 'border-red-500/40 bg-red-950/25 text-red-200'
+                : 'border-amber-500/40 bg-amber-950/20 text-amber-200'
+            }`}
+          >
+            <div className="flex items-start gap-2.5">
+              <AlertCircle
+                className={`mt-0.5 h-4 w-4 shrink-0 ${
+                  discoverNotice.kind === 'api_error' ? 'text-red-400' : 'text-[#f59e0b]'
+                }`}
+              />
+              <span>{discoverNotice.message}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {discoverNotice.kind === 'api_error' && (
+                <>
+                  <button
+                    type="button"
+                    disabled={discovering}
+                    onClick={() => handleDiscoverBusinesses(undefined, { forceBuiltin: true })}
+                    className="inline-flex items-center gap-1.5 bg-[#f59e0b] px-3 py-1.5 text-xs font-semibold text-[#0d0f12] hover:bg-[#fbbf24] disabled:opacity-50 whitespace-nowrap"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    Switch to Built-in Scraper ($0.00) &amp; Retry
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEnhanceSearchOpen(true)}
+                    className="border border-[#323947] bg-[#171b21] px-3 py-1.5 text-xs font-medium text-[#e6e9ef] hover:border-[#f59e0b] whitespace-nowrap"
+                  >
+                    Edit Search Source
+                  </button>
+                </>
+              )}
+
+              {discoverNotice.kind === 'no_results' && discoverNotice.broaderTrade && (
+                <button
+                  type="button"
+                  disabled={discovering}
+                  onClick={() =>
+                    handleDiscoverBusinesses(undefined, {
+                      tradeOverride: discoverNotice.broaderTrade,
+                    })
+                  }
+                  className="inline-flex items-center gap-1.5 bg-[#f59e0b] px-3 py-1.5 text-xs font-semibold text-[#0d0f12] hover:bg-[#fbbf24] disabled:opacity-50 whitespace-nowrap"
+                >
+                  <Search className="h-3.5 w-3.5" />
+                  Try &quot;{discoverNotice.broaderTrade}&quot;
+                </button>
+              )}
+
+              {discoverNotice.kind !== 'api_error' && (
+                <>
+                  <button
+                    type="button"
+                    disabled={discovering}
+                    onClick={() => handleDiscoverBusinesses()}
+                    className="inline-flex items-center gap-1.5 border border-[#323947] bg-[#171b21] px-3 py-1.5 text-xs font-medium text-[#e6e9ef] hover:border-[#f59e0b] disabled:opacity-50 whitespace-nowrap"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    Retry Search
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowSearchPromptFallback(true)}
+                    className="inline-flex items-center gap-1.5 border border-[#323947] bg-[#171b21] px-3 py-1.5 text-xs font-medium text-[#38bdf8] hover:border-[#38bdf8] whitespace-nowrap"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Use Search Prompt
+                  </button>
+                </>
+              )}
+
+              {discoverNotice.kind === 'rate_limited' && (
+                <button
+                  type="button"
+                  onClick={() => setEnhanceSearchOpen(true)}
+                  className="border border-[#323947] bg-[#171b21] px-3 py-1.5 text-xs font-medium text-[#f59e0b] hover:border-[#f59e0b] whitespace-nowrap"
+                >
+                  Optional Search API
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Zero-API Directory Search Prompt Fallback Drawer */}
         {showSearchPromptFallback && (
@@ -1229,18 +1557,27 @@ export function DiscoveryView({
           <div className="mt-5 border border-[#232832] bg-[#0d0f12]">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#232832] px-4 py-3">
               <div className="font-mono text-xs text-[#9aa3b2] tabular-nums">
-                <span className="text-[#e6e9ef]">{discoveredList.length}</span> clean company domains ·{' '}
-                {selectedDiscoveredIds.length} selected
-                {discoverMeta
-                  ? discoverMeta.providerUsed && discoverMeta.providerUsed !== 'builtin_zero_key'
-                    ? ` (${
-                        SEARCH_PROVIDERS.find((p) => p.id === discoverMeta.providerUsed)?.label ||
-                        discoverMeta.providerUsed
-                      }: ${discoverMeta.sources.searchApi ?? discoveredList.length})`
-                    : ` (YellowPages: ${discoverMeta.sources.yellowpages} · DuckDuckGo: ${discoverMeta.sources.duckduckgo})`
-                  : ''}
+                <span className="text-[#e6e9ef]">{discoveredList.length}</span> clean company domains
+                {alreadyInTargetsCount > 0 && (
+                  <span className="text-[#9aa3b2]">
+                    {' '}
+                    (<span className="text-emerald-300">{newDiscoveredCount} new</span> ·{' '}
+                    {alreadyInTargetsCount} already in Targets)
+                  </span>
+                )}{' '}
+                · {selectedDiscoveredIds.length} selected
+                {discoverSourceBreakdown}
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                {alreadyInTargetsCount > 0 && newDiscoveredCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDiscoveredIds(newDiscoveredIds)}
+                    className="inline-flex items-center gap-1.5 border border-emerald-500/40 bg-emerald-950/25 px-3 py-2 text-xs font-medium text-emerald-300 transition-colors hover:border-emerald-400 whitespace-nowrap"
+                  >
+                    Select New Only ({newDiscoveredCount})
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleExportDiscoveredTxt}
@@ -1293,6 +1630,12 @@ export function DiscoveryView({
               </div>
             </div>
 
+            {discoverMeta?.fallbackNote && (
+              <div className="border-b border-[#232832] bg-[#0d1822]/70 px-4 py-2 text-[11px] text-[#bae6fd]">
+                {discoverMeta.fallbackNote}
+              </div>
+            )}
+
             <div className="max-h-72 overflow-y-auto">
               <table className="w-full border-collapse text-left text-xs">
                 <thead className="sticky top-0 bg-[#13161b] text-[#9aa3b2]">
@@ -1317,48 +1660,61 @@ export function DiscoveryView({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#232832]">
-                  {discoveredList.map((item) => (
-                    <tr key={item.id} className="hover:bg-[#171b21]">
-                      <td className="px-4 py-2.5">
-                        <input
-                          type="checkbox"
-                          checked={selectedDiscoveredIds.includes(item.id)}
-                          onChange={() => toggleDiscoveredSelect(item.id)}
-                          aria-label={`Select ${item.companyName}`}
-                          className="h-3.5 w-3.5 accent-[#f59e0b]"
-                        />
-                      </td>
-                      <td className="px-4 py-2.5 font-medium text-[#e6e9ef]">{item.companyName}</td>
-                      <td className="px-4 py-2.5 font-mono">
-                        <a
-                          href={`https://${item.domain}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 text-[#38bdf8] hover:underline"
-                        >
-                          {item.domain}
-                          <ExternalLink className="h-3 w-3 shrink-0 opacity-80" />
-                        </a>
-                      </td>
-                      <td className="px-4 py-2.5 text-[#9aa3b2]">
-                        {item.locality} · {item.categories}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono text-[11px] text-[#9aa3b2]">
-                        {item.source}
-                      </td>
-                      <td className="px-4 py-2.5 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveDiscoveredRow(item.id)}
-                          aria-label={`Remove ${item.domain}`}
-                          className="p-1 text-[#697386] transition-colors hover:text-red-400"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {discoveredList.map((item) => {
+                    const alreadyInTargets = existingLeadDomains.has(item.domain.toLowerCase());
+                    return (
+                      <tr
+                        key={item.id}
+                        className={`hover:bg-[#171b21] ${alreadyInTargets ? 'opacity-75' : ''}`}
+                      >
+                        <td className="px-4 py-2.5">
+                          <input
+                            type="checkbox"
+                            checked={selectedDiscoveredIds.includes(item.id)}
+                            onChange={() => toggleDiscoveredSelect(item.id)}
+                            aria-label={`Select ${item.companyName}`}
+                            className="h-3.5 w-3.5 accent-[#f59e0b]"
+                          />
+                        </td>
+                        <td className="px-4 py-2.5 font-medium text-[#e6e9ef]">{item.companyName}</td>
+                        <td className="px-4 py-2.5 font-mono">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <a
+                              href={`https://${item.domain}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="inline-flex items-center gap-1 text-[#38bdf8] hover:underline"
+                            >
+                              {item.domain}
+                              <ExternalLink className="h-3 w-3 shrink-0 opacity-80" />
+                            </a>
+                            {alreadyInTargets && (
+                              <span className="border border-emerald-500/40 bg-emerald-950/30 px-1.5 py-0.5 font-mono text-[10px] text-emerald-300">
+                                In Targets
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2.5 text-[#9aa3b2]">
+                          {item.locality} · {item.categories}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-mono text-[11px] text-[#9aa3b2]">
+                          {item.source}
+                        </td>
+                        <td className="px-4 py-2.5 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveDiscoveredRow(item.id)}
+                            aria-label={`Remove ${item.domain}`}
+                            className="p-1 text-[#697386] transition-colors hover:text-red-400"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

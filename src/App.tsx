@@ -176,14 +176,23 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(next),
     });
-    if (res.ok) {
-      const data = await res.json();
-      setSettings(data.settings);
-      localStorage.setItem(
-        SETTINGS_STORAGE_KEY,
-        JSON.stringify(sanitizeSettingsForBrowserStorage(data.settings))
-      );
+    if (!res.ok) {
+      let errMsg = 'Failed to save settings';
+      try {
+        const errData = await res.json();
+        if (errData?.error) errMsg = String(errData.error);
+      } catch {
+        // Ignore JSON parse errors on error response
+      }
+      throw new Error(errMsg);
     }
+    const data = await res.json();
+    const normalized = normalizeUserSettings(data.settings);
+    setSettings(normalized);
+    localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify(sanitizeSettingsForBrowserStorage(normalized))
+    );
   };
 
   const handleUpdateSettingsPatch = async (patch: Partial<UserSettings>) => {
