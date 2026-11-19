@@ -20,3 +20,5 @@ CivicLead.exe
 *.blob
 promo-media/
 civiclead_promo_v2.mp4
+bun.lock
+bun.lockb

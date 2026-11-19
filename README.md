@@ -110,7 +110,7 @@ CivicLead Engine is hardened for safe local-first operation:
 
 ### Prerequisites
 - **Node.js `>= 22.5.0`** (required for built-in `node:sqlite`)
-- **npm** (or Bun)
+- **npm**
 
 ### Installation & Development
 
@@ -202,14 +202,15 @@ Running CivicLead locally does **not** require a `.env` file—all AI and Search
 
 ```text
 civiclead/
-├── server.ts                       # Express API server, middleware & Vite/static serving
 ├── server/
+│   ├── index.ts                    # Express API server, middleware & Vite/static serving
 │   ├── security.ts                 # SSRF/DNS validation, safe fetch, masking, CSRF, headers, rate limiting
 │   ├── crawler.ts                  # HTML/JSON-LD scraper, email extraction & DNS MX verification
 │   ├── discoverer.ts               # Zero-key YellowPages/DDG + Serper/Brave/Tavily/Custom search
 │   ├── enricher.ts                 # OpenAI-compatible model discovery, connection test & enrichment
 │   ├── exporter.ts                 # CSV (formula-safe) & plain-text batch exporters
 │   ├── gmailDraft.ts               # RFC 2822 text/plain MIME & base64url payload builder
+│   ├── runtime.ts                  # SEA runtime detection, embedded asset lookup & browser launcher
 │   ├── db.ts                       # node:sqlite schema & persistence helpers
 │   └── settings.ts                 # Settings persistence with masked-key preservation
 ├── src/

@@ -9,7 +9,7 @@ import {
   isValidEmailSyntax,
   normalizeDomain,
   sortEmailCandidates,
-} from './server/crawler.ts';
+} from './crawler.ts';
 import {
   clearAllLeads,
   deleteLead,
@@ -22,11 +22,11 @@ import {
   recordDraft,
   saveProfile,
   upsertLead,
-} from './server/db.ts';
-import { discoverLocalBusinesses } from './server/discoverer.ts';
-import { enrichLead, fetchAvailableModels, testAiConnection } from './server/enricher.ts';
-import { buildBatchCsv, buildBatchPlainText } from './server/exporter.ts';
-import { buildRfc2822PlainTextDraft } from './server/gmailDraft.ts';
+} from './db.ts';
+import { discoverLocalBusinesses } from './discoverer.ts';
+import { enrichLead, fetchAvailableModels, testAiConnection } from './enricher.ts';
+import { buildBatchCsv, buildBatchPlainText } from './exporter.ts';
+import { buildRfc2822PlainTextDraft } from './gmailDraft.ts';
 import {
   getAppBaseDir,
   getEmbeddedAsset,
@@ -34,7 +34,7 @@ import {
   hasEmbeddedAssets,
   isSeaRuntime,
   openBrowser,
-} from './server/runtime.ts';
+} from './runtime.ts';
 import {
   createRateLimiter,
   csrfOriginGuardMiddleware,
@@ -44,9 +44,9 @@ import {
   resolveApiKey,
   sanitizeExternalHttpUrl,
   securityHeadersMiddleware,
-} from './server/security.ts';
-import { getUserSettings, saveUserSettings } from './server/settings.ts';
-import { evaluateDeliverability, parseEnrichedJsonArray } from './src/shared/guardrails.ts';
+} from './security.ts';
+import { getUserSettings, saveUserSettings } from './settings.ts';
+import { evaluateDeliverability, parseEnrichedJsonArray } from '../src/shared/guardrails.ts';
 import {
   BLANK_PRODUCT_PROFILE,
   normalizeProductProfile,
@@ -55,7 +55,7 @@ import {
   type LeadRecord,
   type LeadStatus,
   type UserSettings,
-} from './src/shared/types.ts';
+} from '../src/shared/types.ts';
 
 dotenv.config({ path: path.resolve(getAppBaseDir(), '.env'), quiet: true });
 if (isSeaRuntime() && !process.env.NODE_ENV) {

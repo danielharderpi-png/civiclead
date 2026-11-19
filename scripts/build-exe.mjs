@@ -50,7 +50,7 @@ async function main() {
 
   console.log('[2/5] Bundling backend server into build/sea-server.cjs...');
   await esbuild({
-    entryPoints: [path.join(rootDir, 'server.ts')],
+    entryPoints: [path.join(rootDir, 'server', 'index.ts')],
     outfile: bundlePath,
     bundle: true,
     platform: 'node',

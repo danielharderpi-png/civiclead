@@ -23,10 +23,10 @@ The development server listens on `http://127.0.0.1:3000` by default.
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | Start Express API + Vite dev middleware via `tsx server.ts` |
+| `npm run dev` | Start Express API + Vite dev middleware via `tsx server/index.ts` |
 | `npm run lint` | Run TypeScript typechecking (`tsc --noEmit`) |
 | `npm run build` | Build production frontend bundle to `dist/` (`vite build`) |
-| `npm start` | Run the server in production mode (`node server.ts`) |
+| `npm start` | Run the server in production mode (`node server/index.ts`) |
 
 ## Coding & Security Guidelines
 
